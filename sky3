@@ -1,0 +1,1982 @@
+--[[
+    Roblox Luau Local Executor Script - Sky Only Build
+    Standalone Sky 3 Nightmare script.
+    - No preset selector; boots directly into Sky 3 Nightmare.
+    - Quarry and Meadow subsystems removed.
+    - Tower boss, blessings, loot, mob platform, replay, auto-new-tower,
+      timeout detector, shard collector, auto swing all retained.
+    - Join path: ClimbStart:InvokeServer(3, "nightmare").
+--]]
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local RunService = game:GetService("RunService")
+
+local function getUIParent()
+    if gethui then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then return cg end
+    return Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local UI_PARENT = getUIParent()
+local player = Players.LocalPlayer
+local ClimbRuns = workspace:FindFirstChild("ClimbRuns")
+
+-- ============================================================
+-- UI THEME
+-- ============================================================
+local UI = {
+    bg = Color3.fromRGB(13, 14, 19),
+    panel = Color3.fromRGB(19, 21, 28),
+    panel2 = Color3.fromRGB(24, 26, 34),
+    panel3 = Color3.fromRGB(29, 32, 42),
+    border = Color3.fromRGB(55, 59, 72),
+    text = Color3.fromRGB(238, 240, 247),
+    muted = Color3.fromRGB(143, 148, 164),
+    accent = Color3.fromRGB(102, 145, 255),
+    accentSoft = Color3.fromRGB(43, 58, 96),
+    good = Color3.fromRGB(91, 214, 142),
+    bad = Color3.fromRGB(235, 102, 111),
+}
+
+local function addCorner(obj, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = obj
+    return c
+end
+
+local function addStroke(obj, transparency, color)
+    local s = Instance.new("UIStroke")
+    s.Color = color or UI.border
+    s.Thickness = 1
+    s.Transparency = transparency or 0
+    s.Parent = obj
+    return s
+end
+
+local function tween(obj, props, duration)
+    local t = TweenService:Create(obj, TweenInfo.new(duration or 0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props)
+    t:Play()
+    return t
+end
+
+local function addShadow(parent)
+    local shadow = Instance.new("Frame")
+    shadow.Name = "Shadow"
+    shadow.Size = UDim2.new(1, 14, 1, 14)
+    shadow.Position = UDim2.new(0, -7, 0, -3)
+    shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    shadow.BackgroundTransparency = 0.55
+    shadow.BorderSizePixel = 0
+    shadow.ZIndex = math.max(parent.ZIndex - 1, 0)
+    shadow.Parent = parent
+    addCorner(shadow, 14)
+    return shadow
+end
+
+local function styleButton(btn, normal, hover)
+    btn.AutoButtonColor = false
+    btn.BackgroundColor3 = normal
+    addCorner(btn, 8)
+    addStroke(btn, 0.45)
+    btn.MouseEnter:Connect(function() tween(btn, {BackgroundColor3 = hover or UI.panel3}, 0.12) end)
+    btn.MouseLeave:Connect(function() tween(btn, {BackgroundColor3 = normal}, 0.12) end)
+end
+
+local function makeLabel(parent, text, size, color, font)
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = color or UI.text
+    label.Font = font or Enum.Font.Gotham
+    label.TextSize = size or 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = parent
+    return label
+end
+
+local function makePill(parent, text, width)
+    local pill = Instance.new("TextLabel")
+    pill.Size = UDim2.new(0, width or 68, 0, 24)
+    pill.BackgroundColor3 = UI.panel3
+    pill.Text = text
+    pill.TextColor3 = UI.muted
+    pill.Font = Enum.Font.GothamSemibold
+    pill.TextSize = 10
+    pill.Parent = parent
+    addCorner(pill, 12)
+    addStroke(pill, 0.65)
+    return pill
+end
+
+-- ============================================================
+-- CONFIG (hardcoded Sky 3 Nightmare)
+-- ============================================================
+local config = {
+    Mode = "tower",
+    IsMeadow = false,
+    RemoteName = "ClimbStart",
+
+    AutoSwing = false,
+    AutoLoot = false,
+    AutoBlessing = false,
+    AutoMobPlatform = false,
+    AutoBoss = false,
+    CheckBossColor = true,
+    SpecificBlessing = false,
+    AutoReplay = false,
+
+    AutoNewTower = false,
+    AutoShardCollector = false,
+    ShardCollectCooldown = 0.25,
+    ShardDropFolderName = "ClimbDrops",
+    ShardDropKeyword = "ShardDrop",
+
+    TimeoutDetector = false,
+    TimeoutCheckInterval = 5.0,
+    TimeoutRequiredHits = 3,
+    TimeoutWindow = 15.0,
+    NewTowerCooldown = 20.0,
+
+    TimeoutPartPos = Vector3.new(-12.5, 179.461, -1),
+    EmergencyRestartPos = Vector3.new(-12.5, 179.461, -1),
+
+    SwingDelay = 0.5,
+    BlessingName = "",
+    PlatformHeight = 25,
+    MobPlatformInterval = 0.5,
+    MobMaxDistance = 300,
+    ChestToReplayDelay = 2.0,
+    MinChestFires = 5,
+    ChestStuckTimeout = 10.0,
+    RunResetCooldown = 8.0,
+
+    TeleportSettleDelay = 0.04,
+    PromptDropHeight = 12,
+    MobPlatformBurstFire = true,
+
+    FireVectorX = -0.03877471387386322,
+    FireVectorY = 0,
+    FireVectorZ = 0.9992479681968689,
+
+    ClimbFloor = 3,
+    ClimbDifficulty = "nightmare",
+    RoomName = "Room_sky_castle",
+    BossRoomName = "Room_sky_castle_boss",
+    CirclePath = {"Hub", "ClimbTower", "Circle"},
+
+    BossColorProperty = "auto",
+    BossColorPartHint = "auto",
+    BossColorReadDelay = 1.0,
+    BossColorTolerance = 0.05,
+    BossSizeRatio = 0.7,
+    SheepNameFilter = "",
+    BossTeleportOffset = Vector3.new(0, 0, 0),
+}
+
+-- ============================================================
+-- CONFIG PERSISTENCE
+-- ============================================================
+local CONFIG_FILE = "tower_runner_sky_config.txt"
+
+local function serializeValue(v)
+    local t = typeof(v)
+    if t == "boolean" then return "b:" .. tostring(v) end
+    if t == "number" then return "n:" .. tostring(v) end
+    if t == "string" then return "s:" .. tostring(v) end
+    if t == "Vector3" then return string.format("v:%g,%g,%g", v.X, v.Y, v.Z) end
+    return nil
+end
+
+local function deserializeValue(s)
+    local prefix = s:sub(1, 2)
+    local body = s:sub(3)
+    if prefix == "b:" then return body == "true" end
+    if prefix == "n:" then return tonumber(body) end
+    if prefix == "s:" then return body end
+    if prefix == "v:" then
+        local x, y, z = body:match("([^,]+),([^,]+),([^,]+)")
+        if x and y and z then return Vector3.new(tonumber(x), tonumber(y), tonumber(z)) end
+    end
+    return nil
+end
+
+local function saveConfigFile()
+    if not writefile then return false end
+    local lines = {}
+    for key, value in pairs(config) do
+        if type(value) == "table" then
+            if key == "CirclePath" then
+                table.insert(lines, key .. "=t:" .. table.concat(value, "|"))
+            end
+        else
+            local s = serializeValue(value)
+            if s then table.insert(lines, key .. "=" .. s) end
+        end
+    end
+    return pcall(writefile, CONFIG_FILE, table.concat(lines, "\n"))
+end
+
+local function loadConfigFile()
+    if not (isfile and readfile) then return false end
+    local existsOk, exists = pcall(isfile, CONFIG_FILE)
+    if not existsOk or not exists then return false end
+    local readOk, content = pcall(readfile, CONFIG_FILE)
+    if not readOk or not content then return false end
+    local count = 0
+    for line in content:gmatch("[^\n]+") do
+        local key, value = line:match("^([^=]+)=(.+)$")
+        if key and value and config[key] ~= nil then
+            if value:sub(1, 2) == "t:" then
+                local list = {}
+                for piece in value:sub(3):gmatch("[^|]+") do table.insert(list, piece) end
+                config[key] = list
+                count = count + 1
+            else
+                local v = deserializeValue(value)
+                if v ~= nil then config[key] = v; count = count + 1 end
+            end
+        end
+    end
+    return count > 0
+end
+
+local loadedFromFile = loadConfigFile()
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local state = {
+    autoPlatform = nil,
+    bossState = "idle",
+    bossColor = nil,
+    bossColorProp = nil,
+    bossPart = nil,
+    bossSize = nil,
+    bossName = nil,
+    bossShepherdRef = nil,
+    bossDiedTime = nil,
+    bossFirstSeenAt = nil,
+    bossEngaged = false,
+    lastBossHop = 0,
+    lastTargetCount = 0,
+    firedPrompts = {},
+    firedCD = 0.75,
+    chestCollected = false,
+    chestCollectedAt = nil,
+    chestFiredCount = 0,
+    lastMobPlatformTeleport = 0,
+    lastProgressAt = tick(),
+    hasSeenBossAlive = false,
+    runResetAt = 0,
+    autoWeaponPaused = false,
+    timeoutHits = 0,
+    lastTimeoutHitTime = 0,
+    timeoutPart = nil,
+    emergencyPart = nil,
+    lastNewTowerAt = 0,
+    lastShardCollect = 0,
+    debugColorString = "idle",
+}
+
+-- ============================================================
+-- DEAD MOB TRACKER
+-- ============================================================
+local deadMobs = {}
+
+local function trackMobDeath(mob)
+    if not mob or deadMobs[mob] then return end
+    local hum = mob:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    hum.Died:Connect(function()
+        deadMobs[mob] = true
+    end)
+    if hum.Health <= 0 then
+        deadMobs[mob] = true
+    end
+end
+
+local function isMobDead(mob)
+    return deadMobs[mob] == true
+end
+
+-- ============================================================
+-- HELPERS
+-- ============================================================
+local function getRoot()
+    local char = player.Character
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart")
+end
+
+local function teleportTo(position, offset)
+    local char = player.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    offset = offset or Vector3.zero
+    local target = CFrame.new(position + offset)
+
+    pcall(function() root.Velocity = Vector3.zero end)
+    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+    pcall(function() root.RotVelocity = Vector3.zero end)
+    pcall(function() root.AssemblyAngularVelocity = Vector3.zero end)
+
+    local pivotOk = pcall(function() char:PivotTo(target) end)
+    if not pivotOk then
+        root.CFrame = target
+    else
+        task.wait()
+        if (root.Position - (position + offset)).Magnitude > 10 then
+            root.CFrame = target
+        end
+    end
+    task.wait(0.05)
+end
+
+local function dropOnto(position, fallHeight, waitAfterLanding)
+    fallHeight = fallHeight or config.PromptDropHeight
+    waitAfterLanding = waitAfterLanding or config.TeleportSettleDelay
+
+    local char = player.Character
+    if not char then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+
+    local target = CFrame.new(position + Vector3.new(0, fallHeight, 0))
+
+    pcall(function() root.Velocity = Vector3.zero end)
+    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+    pcall(function() root.RotVelocity = Vector3.zero end)
+    pcall(function() root.AssemblyAngularVelocity = Vector3.zero end)
+
+    pcall(function() char:PivotTo(target) end)
+    root.CFrame = target
+
+    task.wait()
+
+    local start = tick()
+    local lastY = root.Position.Y
+    local stableSince = nil
+    while tick() - start < 1.5 do
+        task.wait(0.03)
+        local y = root.Position.Y
+        if math.abs(y - lastY) < 0.05 then
+            if not stableSince then stableSince = tick() end
+            if tick() - stableSince > 0.05 then break end
+        else
+            stableSince = nil
+        end
+        lastY = y
+    end
+
+    task.wait(waitAfterLanding)
+    return true
+end
+
+local function safeDestroy(part)
+    if part and part.Parent then
+        pcall(function() part:Destroy() end)
+    end
+end
+
+local function findByNamePrefix(root, prefix)
+    local results = {}
+    if not root then return results end
+    for _, desc in ipairs(root:GetDescendants()) do
+        if desc.Name:sub(1, #prefix) == prefix then table.insert(results, desc) end
+    end
+    return results
+end
+
+local function parseKeywords(str)
+    local list = {}
+    if not str or str == "" then return list end
+    for piece in string.gmatch(str, "([^,]+)") do
+        local trimmed = piece:match("^%s*(.-)%s*$")
+        if trimmed ~= "" then table.insert(list, trimmed:lower()) end
+    end
+    return list
+end
+
+local function firePromptNoCD(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    if not prompt.Enabled then return false end
+    local ok1 = pcall(function()
+        ProximityPromptService:InputHoldBegin(prompt, player)
+        task.wait(math.max(prompt.HoldDuration or 0.05, 0.05))
+        ProximityPromptService:InputHoldEnd(prompt, player)
+    end)
+    if ok1 then return true end
+    local ok2 = pcall(function()
+        if fireproximityprompt then fireproximityprompt(prompt) end
+    end)
+    if ok2 and fireproximityprompt then return true end
+    return false
+end
+
+local function firePrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    if not prompt.Enabled then return false end
+    local last = state.firedPrompts[prompt]
+    if last and (tick() - last) < state.firedCD then return false end
+    state.firedPrompts[prompt] = tick()
+    return firePromptNoCD(prompt)
+end
+
+local function isPlayerInside(part, padding)
+    if not part or not part.Parent then return false end
+    local root = getRoot()
+    if not root then return false end
+    local rel = part.CFrame:PointToObjectSpace(root.Position)
+    local half = part.Size / 2
+    padding = padding or 0
+    return math.abs(rel.X) <= half.X + padding
+       and math.abs(rel.Y) <= half.Y + padding
+       and math.abs(rel.Z) <= half.Z + padding
+end
+
+-- ============================================================
+-- OWNERSHIP
+-- ============================================================
+local function belongsToOtherPlayer(inst)
+    if not inst then return false end
+    local attrNames = {
+        "Owner", "Player", "UserId", "PlayerId", "UserIdOwner", "Plr",
+        "Occupied", "OccupiedBy", "InUse", "Locked", "ClaimedBy",
+        "Creator", "User", "Account", "RunOwner", "HostPlayer"
+    }
+    local cur = inst
+    local depth = 0
+    while cur and cur ~= workspace and depth < 6 do
+        for _, attr in ipairs(attrNames) do
+            local ok, val = pcall(function() return cur:GetAttribute(attr) end)
+            if ok and val ~= nil then
+                local t = typeof(val)
+                if t == "Instance" then
+                    if val ~= player then return true end
+                elseif t == "number" then
+                    if val ~= 0 and val ~= player.UserId then return true end
+                elseif t == "string" then
+                    if val ~= "" and val:lower() ~= player.Name:lower() then return true end
+                elseif t == "boolean" then
+                    if val == true then return true end
+                end
+            end
+        end
+        for _, child in ipairs(cur:GetChildren()) do
+            if child:IsA("ObjectValue") and child.Value and child.Value ~= player then return true end
+            if child:IsA("StringValue") and child.Value ~= "" and child.Value:lower() ~= player.Name:lower() then return true end
+            if child:IsA("IntValue") and child.Value ~= 0 and child.Value ~= player.UserId then return true end
+        end
+        cur = cur.Parent
+        depth = depth + 1
+    end
+    return false
+end
+
+local function isOurClimbRun()
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return false end
+    local attrNames = {"Owner", "Player", "UserId", "PlayerId", "Plr", "RunOwner", "HostPlayer"}
+    for _, attr in ipairs(attrNames) do
+        local ok, val = pcall(function() return cr:GetAttribute(attr) end)
+        if ok and val ~= nil then
+            local t = typeof(val)
+            if t == "Instance" and val ~= player then return false end
+            if t == "number" and val ~= 0 and val ~= player.UserId then return false end
+            if t == "string" and val ~= "" and val:lower() ~= player.Name:lower() then return false end
+        end
+    end
+    for _, child in ipairs(cr:GetChildren()) do
+        if child:IsA("ObjectValue") and child.Value and child.Value ~= player then return false end
+        if child:IsA("IntValue") and child.Value ~= 0 and child.Value ~= player.UserId then return false end
+        if child:IsA("StringValue") and child.Value ~= "" and child.Value:lower() ~= player.Name:lower() then return false end
+    end
+    return true
+end
+
+local function isSlime(mob)
+    if not mob then return false end
+    local lname = mob.Name:lower()
+    if string.find(lname, "slime", 1, true) then return true end
+    local parent = mob.Parent
+    if parent then
+        local lp = parent.Name:lower()
+        if string.find(lp, "slime", 1, true) then return true end
+        local gp = parent.Parent
+        if gp then
+            local lgp = gp.Name:lower()
+            if string.find(lgp, "slime", 1, true) then return true end
+        end
+    end
+    return false
+end
+
+local function isMobYours(mobHrp, root)
+    if not mobHrp or not mobHrp.Parent then return false end
+    if isMobDead(mobHrp.Parent) then return false end
+    local hum = mobHrp.Parent:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then
+        deadMobs[mobHrp.Parent] = true
+        return false
+    end
+    if isSlime(mobHrp.Parent) then return false end
+    if belongsToOtherPlayer(mobHrp.Parent) then return false end
+    if root then
+        local d = (mobHrp.Position - root.Position).Magnitude
+        if d > config.MobMaxDistance then return false end
+    end
+    return true
+end
+
+-- ============================================================
+-- BOSS COLOR
+-- ============================================================
+local function readColorFromPart(part)
+    if not part or not part:IsA("BasePart") then return nil, nil end
+    if config.BossColorProperty == "BrickColor" then
+        local ok, bc = pcall(function() return part.BrickColor end)
+        if ok and bc then return bc, "BrickColor" end
+    elseif config.BossColorProperty == "Color3" then
+        local ok, c = pcall(function() return part.Color end)
+        if ok and c then return c, "Color3" end
+    else
+        local ok, c = pcall(function() return part.Color end)
+        if ok and c then return c, "Color3" end
+    end
+    return nil, nil
+end
+
+local function getBossColor(boss)
+    if not boss then return nil, nil, nil end
+
+    if config.BossColorPartHint ~= "auto" and config.BossColorPartHint ~= "" then
+        local p = boss:FindFirstChild(config.BossColorPartHint, true)
+        if p and p:IsA("BasePart") then
+            local c, prop = readColorFromPart(p)
+            if c then return c, prop, p end
+        end
+    end
+
+    local samples = {}
+    local maxVolume = 0
+    for _, p in ipairs(boss:GetDescendants()) do
+        if p:IsA("BasePart") and p.Transparency < 0.85 then
+            local vol = p.Size.X * p.Size.Y * p.Size.Z
+            if vol > maxVolume then maxVolume = vol end
+            local ok, c = pcall(function() return p.Color end)
+            if ok and c then
+                local r, g, b = c.R, c.G, c.B
+                local mx = math.max(r, g, b)
+                local mn = math.min(r, g, b)
+                local isNeutral = (mx - mn) < 0.08
+                table.insert(samples, { color = c, part = p, volume = vol, isNeutral = isNeutral })
+            end
+        end
+    end
+
+    if #samples == 0 then return nil, nil, nil end
+
+    local minVolume = maxVolume * 0.15
+    local filtered = {}
+    for _, s in ipairs(samples) do
+        if s.volume >= minVolume then table.insert(filtered, s) end
+    end
+    if #filtered == 0 then filtered = samples end
+
+    local colorful = {}
+    for _, s in ipairs(filtered) do
+        if not s.isNeutral then table.insert(colorful, s) end
+    end
+    if #colorful > 0 then filtered = colorful end
+
+    local groups = {}
+    for _, s in ipairs(filtered) do
+        local r = math.floor(s.color.R * 20 + 0.5) / 20
+        local g = math.floor(s.color.G * 20 + 0.5) / 20
+        local b = math.floor(s.color.B * 20 + 0.5) / 20
+        local key = string.format("%.2f_%.2f_%.2f", r, g, b)
+        if not groups[key] then
+            groups[key] = { color = Color3.new(r, g, b), totalVol = 0, sample = s }
+        end
+        groups[key].totalVol = groups[key].totalVol + s.volume
+    end
+
+    local bestGroup = nil
+    for _, g in pairs(groups) do
+        if not bestGroup or g.totalVol > bestGroup.totalVol then
+            bestGroup = g
+        end
+    end
+
+    if bestGroup then
+        return bestGroup.sample.color, "Color3", bestGroup.sample.part
+    end
+    return nil, nil, nil
+end
+
+local function getMobSizeMagnitude(mob)
+    local hrp = mob:FindFirstChild("HumanoidRootPart")
+    if not hrp then return 0 end
+    local s = hrp.Size
+    return (s.X*s.X + s.Y*s.Y + s.Z*s.Z) ^ 0.5
+end
+
+-- ============================================================
+-- FIRE WEAPON
+-- ============================================================
+local function fireWeaponOnce()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    if not remotes then return false end
+    local fire = remotes:FindFirstChild("FireWeapon")
+    if not fire then return false end
+    local vec = Vector3.new(config.FireVectorX, config.FireVectorY, config.FireVectorZ)
+    return pcall(function() fire:FireServer(vec) end)
+end
+
+-- ============================================================
+-- NEW TOWER
+-- ============================================================
+local function getTowerCircle()
+    local cur = workspace
+    for _, segment in ipairs(config.CirclePath) do
+        if not cur then return nil end
+        cur = cur:FindFirstChild(segment)
+    end
+    return cur
+end
+
+local function moveCircleToPlayer(circle)
+    if not circle then return false end
+    local root = getRoot()
+    if not root then return false end
+    local targetCFrame = CFrame.new(root.Position + Vector3.new(0, -3, 0))
+    if circle:IsA("BasePart") then
+        return pcall(function()
+            circle.Anchored = true
+            circle.CFrame = targetCFrame
+        end)
+    elseif circle:IsA("Model") then
+        return pcall(function()
+            for _, d in ipairs(circle:GetDescendants()) do
+                if d:IsA("BasePart") then d.Anchored = true end
+            end
+            circle:PivotTo(targetCFrame)
+        end)
+    end
+    return false
+end
+
+local function triggerNewTower()
+    if tick() - state.lastNewTowerAt < config.NewTowerCooldown then return false end
+    local circle = getTowerCircle()
+    if not circle then return false end
+    if not moveCircleToPlayer(circle) then return false end
+    task.wait(0.4)
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    if not remotes then return false end
+    local remoteName = config.RemoteName or "ClimbStart"
+    local remote = remotes:FindFirstChild(remoteName)
+    if not remote then return false end
+    local ok = pcall(function() remote:InvokeServer(config.ClimbFloor, config.ClimbDifficulty) end)
+    if ok then state.lastNewTowerAt = tick(); return true end
+    return false
+end
+
+-- ============================================================
+-- TIMEOUT + EMERGENCY
+-- ============================================================
+local function ensureTimeoutPart()
+    if state.timeoutPart and state.timeoutPart.Parent then return end
+    local existing = workspace:FindFirstChild("TimeoutDetectorZone")
+    if existing then state.timeoutPart = existing; return end
+    local p = Instance.new("Part")
+    p.Name = "TimeoutDetectorZone"
+    p.Size = Vector3.new(3, 3, 3)
+    p.Position = config.TimeoutPartPos
+    p.Anchored = true
+    p.CanCollide = false
+    p.Transparency = 0.5
+    p.Material = Enum.Material.ForceField
+    p.Color = Color3.fromRGB(255, 80, 80)
+    p.Parent = workspace
+    state.timeoutPart = p
+end
+
+local function ensureEmergencyPart()
+    if state.emergencyPart and state.emergencyPart.Parent then return end
+    local existing = workspace:FindFirstChild("EmergencyRestartTower")
+    if existing then state.emergencyPart = existing; return end
+    local p = Instance.new("Part")
+    p.Name = "EmergencyRestartTower"
+    p.Size = Vector3.new(6, 1, 6)
+    p.Position = config.EmergencyRestartPos
+    p.Anchored = true
+    p.CanCollide = true
+    p.Material = Enum.Material.Neon
+    p.Color = Color3.fromRGB(255, 120, 0)
+    p.Transparency = 0.2
+    p.Parent = workspace
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 200, 0, 40)
+    bb.StudsOffset = Vector3.new(0, 3, 0)
+    bb.AlwaysOnTop = true
+    bb.Parent = p
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "Emergency Restart Tower"
+    lbl.TextColor3 = Color3.fromRGB(255, 200, 0)
+    lbl.Font = Enum.Font.SourceSansBold
+    lbl.TextScaled = true
+    lbl.Parent = bb
+    p.Touched:Connect(function(hit)
+        local char = hit:FindFirstAncestorOfClass("Model")
+        if char and char == player.Character then
+            state.autoWeaponPaused = true
+            triggerNewTower()
+        end
+    end)
+    state.emergencyPart = p
+end
+
+local function removeEmergencyPart()
+    if state.emergencyPart then
+        pcall(function()
+            if state.emergencyPart.Parent then state.emergencyPart:Destroy() end
+        end)
+    end
+    state.emergencyPart = nil
+    local existing = workspace:FindFirstChild("EmergencyRestartTower")
+    if existing then pcall(function() existing:Destroy() end) end
+end
+
+-- ============================================================
+-- MAINTENANCE
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(3)
+        ClimbRuns = workspace:FindFirstChild("ClimbRuns")
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(15)
+        local now = tick()
+        local fresh = {}
+        for prompt, t in pairs(state.firedPrompts) do
+            if prompt and prompt.Parent and (now - t) < 60 then fresh[prompt] = t end
+        end
+        state.firedPrompts = fresh
+
+        local freshDead = {}
+        for mob in pairs(deadMobs) do
+            if mob and mob.Parent then freshDead[mob] = true end
+        end
+        deadMobs = freshDead
+    end
+end)
+
+-- ============================================================
+-- AUTO SWING
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(config.SwingDelay)
+        if not state.autoWeaponPaused then
+            if config.AutoSwing then
+                fireWeaponOnce()
+            elseif config.AutoBoss and state.bossEngaged then
+                fireWeaponOnce()
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- EMERGENCY RESUME
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        if state.autoWeaponPaused and state.emergencyPart and state.emergencyPart.Parent then
+            if not isPlayerInside(state.emergencyPart, 1) then
+                state.autoWeaponPaused = false
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- TIMEOUT DETECTOR
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(config.TimeoutCheckInterval)
+        if config.TimeoutDetector then
+            ensureTimeoutPart()
+            if state.timeoutPart and state.timeoutPart.Parent then
+                if tick() - state.lastNewTowerAt >= config.NewTowerCooldown then
+                    if isPlayerInside(state.timeoutPart, 0.5) then
+                        local now = tick()
+                        if now - state.lastTimeoutHitTime > config.TimeoutWindow then
+                            state.timeoutHits = 0
+                        end
+                        state.timeoutHits = state.timeoutHits + 1
+                        state.lastTimeoutHitTime = now
+                        if state.timeoutHits >= config.TimeoutRequiredHits then
+                            state.timeoutHits = 0
+                            triggerNewTower()
+                        end
+                    else
+                        state.timeoutHits = 0
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- AUTO NEW TOWER
+-- ============================================================
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if config.AutoNewTower then
+            ensureEmergencyPart()
+            if not workspace:FindFirstChild("ClimbRuns") then
+                if workspace:FindFirstChild("Hub") then
+                    triggerNewTower()
+                end
+            end
+        else
+            removeEmergencyPart()
+        end
+    end
+end)
+
+-- ============================================================
+-- AUTO SHARD COLLECTOR
+-- ============================================================
+local function handleShardCollector()
+    if not config.AutoShardCollector then return end
+    if tick() - state.lastShardCollect < config.ShardCollectCooldown then return end
+    state.lastShardCollect = tick()
+
+    local drops = workspace:FindFirstChild(config.ShardDropFolderName)
+    if not drops then return end
+
+    local root = getRoot()
+    if not root then return end
+
+    local keyword = config.ShardDropKeyword:lower()
+    for _, drop in ipairs(drops:GetChildren()) do
+        if keyword == "" or string.find(drop.Name:lower(), keyword, 1, true) then
+            local pos = nil
+            if drop:IsA("BasePart") then
+                pos = drop.Position
+            elseif drop:IsA("Model") then
+                local p = drop.PrimaryPart or drop:FindFirstChildWhichIsA("BasePart", true)
+                if p then pos = p.Position end
+            elseif drop:IsA("Attachment") and drop.Parent and drop.Parent:IsA("BasePart") then
+                pos = drop.Parent.Position
+            end
+            if not pos then continue end
+
+            if drop:IsA("BasePart") then
+                pcall(function() drop.CFrame = CFrame.new(root.Position) end)
+            elseif drop:IsA("Model") then
+                pcall(function()
+                    for _, d in ipairs(drop:GetDescendants()) do
+                        if d:IsA("BasePart") then pcall(function() d.Anchored = true end) end
+                    end
+                    drop:PivotTo(CFrame.new(root.Position))
+                end)
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- AUTO LOOT
+-- ============================================================
+local function handleLoot()
+    if not config.AutoLoot then return end
+    if not isOurClimbRun() then return end
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return end
+    for _, obj in ipairs(findByNamePrefix(cr, "Loot_")) do
+        if not belongsToOtherPlayer(obj) then
+            local prompts = {}
+            if obj:IsA("ProximityPrompt") then table.insert(prompts, obj) end
+            for _, d in ipairs(obj:GetDescendants()) do
+                if d:IsA("ProximityPrompt") then table.insert(prompts, d) end
+            end
+            if #prompts > 0 then
+                local anchorPos = nil
+                if obj:IsA("BasePart") then anchorPos = obj.Position end
+                if not anchorPos and prompts[1].Parent and prompts[1].Parent:IsA("BasePart") then
+                    anchorPos = prompts[1].Parent.Position
+                end
+                if anchorPos then dropOnto(anchorPos, config.PromptDropHeight, config.TeleportSettleDelay) end
+                for _, p in ipairs(prompts) do firePromptNoCD(p) end
+            end
+            for _, cd in ipairs(obj:GetDescendants()) do
+                if cd:IsA("ClickDetector") then pcall(function() fireclickdetector(cd) end) end
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- AUTO BLESSING
+-- ============================================================
+local function handleBlessings()
+    if not config.AutoBlessing then return end
+    if not isOurClimbRun() then return end
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return end
+    local blessingFolders = findByNamePrefix(cr, "Blessings_")
+    if #blessingFolders == 0 then return end
+
+    local specificKeywords = {}
+    if config.SpecificBlessing and config.BlessingName ~= "" then
+        specificKeywords = parseKeywords(config.BlessingName)
+    end
+
+    for _, bf in ipairs(blessingFolders) do
+        if not belongsToOtherPlayer(bf) then
+            local blessings = {}
+            for _, c in ipairs(bf:GetChildren()) do
+                if c.Name:sub(1, 9) == "Blessing_" then table.insert(blessings, c) end
+            end
+            if #blessings == 0 then
+                for _, d in ipairs(bf:GetDescendants()) do
+                    if d.Name:sub(1, 9) == "Blessing_" then table.insert(blessings, d) end
+                end
+            end
+
+            if #blessings > 0 then
+                local target
+                if #specificKeywords > 0 then
+                    for _, b in ipairs(blessings) do
+                        local lname = b.Name:lower()
+                        for _, keyword in ipairs(specificKeywords) do
+                            if string.find(lname, keyword, 1, true) then target = b; break end
+                        end
+                        if target then break end
+                    end
+                end
+                if not target then target = blessings[math.random(1, #blessings)] end
+
+                local prompts = {}
+                if target:IsA("ProximityPrompt") then table.insert(prompts, target) end
+                for _, d in ipairs(target:GetDescendants()) do
+                    if d:IsA("ProximityPrompt") then table.insert(prompts, d) end
+                end
+                if #prompts > 0 then
+                    local anchorPos = nil
+                    if target:IsA("BasePart") then anchorPos = target.Position end
+                    if not anchorPos and prompts[1].Parent and prompts[1].Parent:IsA("BasePart") then
+                        anchorPos = prompts[1].Parent.Position
+                    end
+                    if anchorPos then dropOnto(anchorPos, config.PromptDropHeight, config.TeleportSettleDelay) end
+                    for _, p in ipairs(prompts) do firePromptNoCD(p) end
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- AUTO MOB PLATFORM
+-- ============================================================
+local function handleMobPlatform()
+    if not config.AutoMobPlatform then
+        safeDestroy(state.autoPlatform)
+        state.autoPlatform = nil
+        return
+    end
+    if not isOurClimbRun() then return end
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return end
+    if tick() - state.lastMobPlatformTeleport < config.MobPlatformInterval then return end
+
+    local root = getRoot()
+    if not root then return end
+
+    local living = {}
+    for _, d in ipairs(cr:GetDescendants()) do
+        if d.Name == "Mobs" and #d:GetChildren() > 0 then
+            for _, mob in ipairs(d:GetChildren()) do
+                trackMobDeath(mob)
+                if not isMobDead(mob) then
+                    local hrp = mob:FindFirstChild("HumanoidRootPart")
+                    local hum = mob:FindFirstChildOfClass("Humanoid")
+                    if hrp and hum and hum.Health > 0 then
+                        if isMobYours(hrp, root) then
+                            table.insert(living, hrp)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if #living > 0 then
+        local targetHrp = living[math.random(1, #living)]
+        if not state.autoPlatform or not state.autoPlatform.Parent then
+            state.autoPlatform = Instance.new("Part")
+            state.autoPlatform.Name = "AutoPlatform"
+            state.autoPlatform.Size = Vector3.new(20, 1, 20)
+            state.autoPlatform.Anchored = true
+            state.autoPlatform.CanCollide = true
+            state.autoPlatform.Transparency = 0.5
+            state.autoPlatform.Parent = workspace
+        end
+        local platformPos = targetHrp.Position + Vector3.new(0, config.PlatformHeight, 0)
+        state.autoPlatform.Position = platformPos
+
+        if config.MobPlatformBurstFire and config.AutoSwing and not state.autoWeaponPaused then
+            fireWeaponOnce()
+        end
+
+        teleportTo(platformPos, Vector3.new(0, 5, 0))
+        state.lastMobPlatformTeleport = tick()
+    else
+        safeDestroy(state.autoPlatform)
+        state.autoPlatform = nil
+    end
+end
+
+-- ============================================================
+-- AUTO BOSS
+-- ============================================================
+local function getBossRoom()
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return nil end
+    local bossRoom = cr:FindFirstChild(config.BossRoomName)
+    if bossRoom then return bossRoom end
+    for _, c in ipairs(cr:GetChildren()) do
+        if c.Name:find("_boss") then return c end
+    end
+    return nil
+end
+
+local function isBossAlive()
+    if not isOurClimbRun() then return false end
+    local bossRoom = getBossRoom()
+    if not bossRoom then return false end
+    local mobsFolder = bossRoom:FindFirstChild("Mobs")
+    if not mobsFolder then return false end
+    for _, mob in ipairs(mobsFolder:GetDescendants()) do
+        if mob:IsA("Model") and mob:FindFirstChildOfClass("Humanoid") then
+            trackMobDeath(mob)
+            if not isMobDead(mob) and not isSlime(mob) then
+                local hum = mob:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function handleBoss()
+    if not config.AutoBoss then
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        return
+    end
+    if not isOurClimbRun() then
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        return
+    end
+    local bossRoom = getBossRoom()
+    if not bossRoom then
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        state.debugColorString = "no boss room"
+        return
+    end
+    if belongsToOtherPlayer(bossRoom) then
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        return
+    end
+
+    local mobsFolder = bossRoom:FindFirstChild("Mobs")
+    if not mobsFolder then
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        return
+    end
+    local shepherd = mobsFolder:FindFirstChild("Mob_tower_flock_shepherd")
+    if not shepherd then
+        state.bossState = "idle"
+        state.bossColor = nil
+        state.bossColorProp = nil
+        state.bossShepherdRef = nil
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        state.debugColorString = "no shepherd"
+        return
+    end
+    if isSlime(shepherd) then
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        return
+    end
+
+    trackMobDeath(shepherd)
+
+    if state.bossShepherdRef ~= shepherd then
+        state.bossState = "idle"
+        state.bossColor = nil
+        state.bossColorProp = nil
+        state.bossSize = nil
+        state.bossName = nil
+        state.bossPart = nil
+        state.bossFirstSeenAt = nil
+        state.bossShepherdRef = shepherd
+        state.debugColorString = "new boss detected"
+    end
+
+    local hrp = shepherd:FindFirstChild("HumanoidRootPart")
+
+    if state.bossState == "idle" then
+        state.bossState = "seen"
+        state.bossFirstSeenAt = tick()
+    end
+    if state.bossState == "seen" then
+        if tick() - (state.bossFirstSeenAt or 0) >= config.BossColorReadDelay then
+            local c, prop, partUsed = getBossColor(shepherd)
+            state.bossColor = c
+            state.bossColorProp = prop
+            state.bossSize = getMobSizeMagnitude(shepherd)
+            state.bossName = shepherd.Name
+            state.bossState = "colored"
+            state.bossPart = hrp
+            if c and prop == "Color3" then
+                local r = math.floor(c.R * 255)
+                local g = math.floor(c.G * 255)
+                local b = math.floor(c.B * 255)
+                state.debugColorString = string.format("Color3 %d,%d,%d (part: %s)", r, g, b, partUsed and partUsed.Name or "?")
+            elseif c and prop == "BrickColor" then
+                state.debugColorString = string.format("BrickColor %s (part: %s)", tostring(c), partUsed and partUsed.Name or "?")
+            else
+                state.debugColorString = "no color read"
+            end
+        end
+    end
+
+    local living = {}
+    for _, mob in ipairs(mobsFolder:GetDescendants()) do
+        if mob:IsA("Model") and mob:FindFirstChildOfClass("Humanoid") and mob:FindFirstChild("HumanoidRootPart") then
+            trackMobDeath(mob)
+            if not isMobDead(mob) and not isSlime(mob) then
+                if config.SheepNameFilter == "" or string.find(mob.Name:lower(), config.SheepNameFilter:lower(), 1, true) then
+                    local mHum = mob:FindFirstChildOfClass("Humanoid")
+                    if mHum and mHum.Health > 0 then
+                        if not belongsToOtherPlayer(mob) then
+                            table.insert(living, mob)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    state.lastTargetCount = #living
+
+    if #living >= 2 then
+        state.bossEngaged = true
+        if tick() - state.lastBossHop >= config.MobPlatformInterval then
+            state.lastBossHop = tick()
+            local pick = living[math.random(1, #living)]
+            local pickHrp = pick:FindFirstChild("HumanoidRootPart")
+            if pickHrp then
+                if config.AutoSwing and not state.autoWeaponPaused then
+                    fireWeaponOnce()
+                end
+                teleportTo(pickHrp.Position, Vector3.new(0, 30, 0))
+            end
+        end
+    else
+        if hrp and hrp.Parent and not isMobDead(shepherd) then
+            state.bossEngaged = true
+            teleportTo(hrp.Position, config.BossTeleportOffset)
+            local hum = hrp.Parent:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health <= 0 then
+                state.bossState = "dead"
+                state.bossDiedTime = tick()
+                state.bossEngaged = false
+            end
+        else
+            state.bossEngaged = false
+        end
+    end
+
+    if state.bossState == "dead" and state.bossDiedTime and (tick() - state.bossDiedTime) >= 4 then
+        state.bossState = "idle"
+        state.bossDiedTime = nil
+        state.bossColor = nil
+        state.bossColorProp = nil
+        state.bossPart = nil
+        state.bossSize = nil
+        state.bossName = nil
+        state.bossFirstSeenAt = nil
+        state.bossShepherdRef = nil
+        state.bossEngaged = false
+        state.lastTargetCount = 0
+        state.debugColorString = "idle"
+    end
+end
+
+-- ============================================================
+-- AUTO REPLAY
+-- ============================================================
+local function findRewardChest()
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return nil end
+    local rewardRoom = cr:FindFirstChild("RewardRoom")
+    if rewardRoom then
+        local c = rewardRoom:FindFirstChild("RewardChest")
+        if c then return c end
+        c = rewardRoom:FindFirstChild("RewardChest", true)
+        if c then return c end
+    end
+    for _, room in ipairs(cr:GetChildren()) do
+        local c = room:FindFirstChild("RewardChest")
+        if c then return c end
+    end
+    for _, desc in ipairs(cr:GetDescendants()) do
+        if desc.Name == "RewardChest" then return desc end
+    end
+    return nil
+end
+
+local function findReplayDoor()
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then return nil end
+    local rewardRoom = cr:FindFirstChild("RewardRoom")
+    if rewardRoom then
+        local d = rewardRoom:FindFirstChild("ReplayDoor")
+        if d then return d end
+        d = rewardRoom:FindFirstChild("ReplayDoor", true)
+        if d then return d end
+    end
+    for _, room in ipairs(cr:GetChildren()) do
+        local d = room:FindFirstChild("ReplayDoor")
+        if d then return d end
+    end
+    for _, desc in ipairs(cr:GetDescendants()) do
+        if desc.Name == "ReplayDoor" then return desc end
+    end
+    return nil
+end
+
+local function fireAllPromptsIn(target)
+    if not target then return false end
+
+    local pos = nil
+    if target:IsA("BasePart") then
+        pos = target.Position
+    elseif target:IsA("Model") then
+        local p = target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart", true)
+        if p then pos = p.Position end
+    elseif target:IsA("ProximityPrompt") then
+        if target.Parent and target.Parent:IsA("BasePart") then
+            pos = target.Parent.Position
+        end
+    end
+
+    if pos then
+        dropOnto(pos, config.PromptDropHeight, config.TeleportSettleDelay)
+    end
+
+    local fired = false
+    local prompts = {}
+    if target:IsA("ProximityPrompt") then table.insert(prompts, target) end
+    if target:IsA("ClickDetector") then table.insert(prompts, target) end
+    for _, d in ipairs(target:GetDescendants()) do
+        if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+            table.insert(prompts, d)
+        end
+    end
+
+    if #prompts == 0 and pos then
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+                local part = d.Parent
+                if part and part:IsA("BasePart") then
+                    if (part.Position - pos).Magnitude <= 15 then
+                        table.insert(prompts, d)
+                    end
+                end
+            end
+        end
+    end
+
+    for _, p in ipairs(prompts) do
+        if p:IsA("ProximityPrompt") then
+            if firePromptNoCD(p) then fired = true end
+        elseif p:IsA("ClickDetector") then
+            pcall(function() fireclickdetector(p) end)
+            fired = true
+        end
+    end
+
+    if not fired then
+        task.wait(config.TeleportSettleDelay * 2)
+        for _, p in ipairs(prompts) do
+            if p:IsA("ProximityPrompt") then
+                if firePromptNoCD(p) then fired = true end
+            elseif p:IsA("ClickDetector") then
+                pcall(function() fireclickdetector(p) end)
+                fired = true
+            end
+        end
+    end
+
+    return fired
+end
+
+local function handleAutoReplay()
+    if not config.AutoReplay then
+        state.chestCollected = false
+        state.chestCollectedAt = nil
+        state.chestFiredCount = 0
+        state.lastProgressAt = tick()
+        return
+    end
+    if not isOurClimbRun() then
+        state.chestCollected = false
+        state.chestCollectedAt = nil
+        state.chestFiredCount = 0
+        state.lastProgressAt = tick()
+        return
+    end
+
+    local cr = workspace:FindFirstChild("ClimbRuns")
+    if not cr then
+        state.chestCollected = false
+        state.chestCollectedAt = nil
+        state.chestFiredCount = 0
+        state.lastProgressAt = tick()
+        return
+    end
+
+    if tick() - state.runResetAt < config.RunResetCooldown then
+        state.chestCollected = false
+        state.chestCollectedAt = nil
+        state.chestFiredCount = 0
+        state.lastProgressAt = tick()
+        return
+    end
+
+    if isBossAlive() then state.hasSeenBossAlive = true end
+
+    if not state.hasSeenBossAlive or isBossAlive() then
+        state.chestCollected = false
+        state.chestCollectedAt = nil
+        state.chestFiredCount = 0
+        state.lastProgressAt = tick()
+        return
+    end
+
+    local replayDoor = findReplayDoor()
+    local chest = findRewardChest()
+
+    local minDelay = math.max(config.ChestToReplayDelay or 2, 1)
+    local minFires = math.max(config.MinChestFires or 5, 3)
+
+    if state.chestCollected and (tick() - (state.lastProgressAt or tick())) > config.ChestStuckTimeout then
+        state.chestCollected = false
+        state.chestCollectedAt = nil
+        state.chestFiredCount = 0
+        state.lastProgressAt = tick()
+        return
+    end
+
+    if not state.chestCollected then
+        if chest then
+            fireAllPromptsIn(chest)
+            state.chestFiredCount = 1
+        end
+        state.chestCollected = true
+        state.chestCollectedAt = tick()
+        state.lastProgressAt = tick()
+        return
+    end
+
+    local elapsed = tick() - (state.chestCollectedAt or 0)
+
+    if elapsed < minDelay or state.chestFiredCount < minFires then
+        if chest then
+            fireAllPromptsIn(chest)
+            state.chestFiredCount = state.chestFiredCount + 1
+            state.lastProgressAt = tick()
+        end
+        return
+    end
+
+    if replayDoor then
+        fireAllPromptsIn(replayDoor)
+    end
+
+    state.chestCollected = false
+    state.chestCollectedAt = nil
+    state.chestFiredCount = 0
+    state.lastProgressAt = tick()
+    state.hasSeenBossAlive = false
+    state.runResetAt = tick()
+
+    deadMobs = {}
+end
+
+-- ============================================================
+-- MAIN LOOP
+-- ============================================================
+task.spawn(function()
+    while task.wait(0.05) do
+        pcall(handleShardCollector)
+        pcall(handleLoot)
+        pcall(handleBlessings)
+        pcall(handleMobPlatform)
+        pcall(handleBoss)
+        pcall(handleAutoReplay)
+    end
+end)
+
+-- ============================================================
+-- MAIN UI
+-- ============================================================
+local function createMainUI()
+    local existing = UI_PARENT:FindFirstChild("TowerRunnerUI")
+    if existing then existing:Destroy() end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "TowerRunnerUI"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = UI_PARENT
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 560, 0, 740)
+    frame.Position = UDim2.new(0.5, -280, 0.5, -370)
+    frame.BackgroundColor3 = UI.bg
+    frame.BorderSizePixel = 0
+    frame.Active = true
+    frame.Draggable = true
+    frame.Parent = gui
+    addCorner(frame, 16)
+    addStroke(frame, 0.12)
+    addShadow(frame)
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 72)
+    header.BackgroundColor3 = UI.panel
+    header.BorderSizePixel = 0
+    header.Parent = frame
+    addCorner(header, 16)
+
+    local accent = Instance.new("Frame")
+    accent.Size = UDim2.new(0, 4, 0, 42)
+    accent.Position = UDim2.new(0, 16, 0, 15)
+    accent.BackgroundColor3 = UI.accent
+    accent.BorderSizePixel = 0
+    accent.Parent = header
+    addCorner(accent, 4)
+
+    local title = makeLabel(header, "Tower Runner", 18, UI.text, Enum.Font.GothamBold)
+    title.Position = UDim2.new(0, 30, 0, 10)
+    title.Size = UDim2.new(0, 220, 0, 24)
+
+    local subtitle = makeLabel(header, "Preset: Sky 3 Nightmare", 10, UI.muted)
+    subtitle.Position = UDim2.new(0, 30, 0, 36)
+    subtitle.Size = UDim2.new(0, 260, 0, 16)
+
+    local version = makePill(header, "SKY", 48)
+    version.Position = UDim2.new(0, 240, 0, 16)
+
+    local statePill = makePill(header, "READY", 62)
+    statePill.Position = UDim2.new(1, -150, 0, 16)
+    statePill.TextColor3 = UI.good
+
+    local minimize = Instance.new("TextButton")
+    minimize.Size = UDim2.new(0, 34, 0, 34)
+    minimize.Position = UDim2.new(1, -94, 0, 11)
+    minimize.BackgroundColor3 = UI.panel2
+    minimize.Text = "—"
+    minimize.TextColor3 = UI.text
+    minimize.Font = Enum.Font.GothamBold
+    minimize.TextSize = 18
+    minimize.Parent = header
+    styleButton(minimize, UI.panel2, UI.panel3)
+
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.new(0, 34, 0, 34)
+    close.Position = UDim2.new(1, -52, 0, 11)
+    close.BackgroundColor3 = UI.panel2
+    close.Text = "×"
+    close.TextColor3 = UI.muted
+    close.Font = Enum.Font.GothamBold
+    close.TextSize = 18
+    close.Parent = header
+    styleButton(close, UI.panel2, Color3.fromRGB(70, 35, 40))
+
+    close.MouseButton1Click:Connect(function() gui:Destroy() end)
+
+    local sidebar = Instance.new("Frame")
+    sidebar.Size = UDim2.new(0, 156, 1, -90)
+    sidebar.Position = UDim2.new(0, 14, 0, 80)
+    sidebar.BackgroundColor3 = UI.panel
+    sidebar.BorderSizePixel = 0
+    sidebar.Parent = frame
+    addCorner(sidebar, 12)
+    addStroke(sidebar, 0.5)
+
+    local sideTitle = makeLabel(sidebar, "SECTIONS", 9, UI.muted, Enum.Font.GothamBold)
+    sideTitle.Position = UDim2.new(0, 16, 0, 16)
+    sideTitle.Size = UDim2.new(1, -32, 0, 16)
+
+    local nav = {}
+    local pages = {}
+
+    local content = Instance.new("Frame")
+    content.Size = UDim2.new(1, -184, 1, -90)
+    content.Position = UDim2.new(0, 174, 0, 80)
+    content.BackgroundTransparency = 1
+    content.Parent = frame
+
+    local searchBox = Instance.new("TextBox")
+    searchBox.Size = UDim2.new(1, 0, 0, 36)
+    searchBox.Position = UDim2.new(0, 0, 0, 0)
+    searchBox.BackgroundColor3 = UI.panel
+    searchBox.TextColor3 = UI.text
+    searchBox.PlaceholderColor3 = UI.muted
+    searchBox.PlaceholderText = "Search settings..."
+    searchBox.Text = ""
+    searchBox.ClearTextOnFocus = false
+    searchBox.Font = Enum.Font.Gotham
+    searchBox.TextSize = 11
+    searchBox.TextXAlignment = Enum.TextXAlignment.Left
+    searchBox.Parent = content
+    addCorner(searchBox, 9)
+    addStroke(searchBox, 0.5)
+
+    local searchPad = Instance.new("UIPadding")
+    searchPad.PaddingLeft = UDim.new(0, 12)
+    searchPad.PaddingRight = UDim.new(0, 12)
+    searchPad.Parent = searchBox
+
+    local function makePage()
+        local page = Instance.new("ScrollingFrame")
+        page.Size = UDim2.new(1, 0, 1, -48)
+        page.Position = UDim2.new(0, 0, 0, 48)
+        page.BackgroundTransparency = 1
+        page.BorderSizePixel = 0
+        page.ScrollBarThickness = 4
+        page.ScrollBarImageColor3 = UI.border
+        page.CanvasSize = UDim2.new()
+        page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        page.Visible = false
+        page.Parent = content
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 8)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Parent = page
+
+        local pad = Instance.new("UIPadding")
+        pad.PaddingBottom = UDim.new(0, 14)
+        pad.Parent = page
+
+        table.insert(pages, page)
+        return page
+    end
+
+    local function createNav(name, index, glyph)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -20, 0, 48)
+        btn.Position = UDim2.new(0, 10, 0, 44 + (#nav * 54))
+        btn.BackgroundColor3 = UI.panel
+        btn.Text = ""
+        btn.Parent = sidebar
+        styleButton(btn, UI.panel, UI.panel2)
+
+        local icon = makeLabel(btn, glyph, 13, UI.muted, Enum.Font.GothamBold)
+        icon.Size = UDim2.new(0, 28, 1, 0)
+        icon.Position = UDim2.new(0, 10, 0, 0)
+        icon.TextXAlignment = Enum.TextXAlignment.Center
+
+        local label = makeLabel(btn, name, 11, UI.muted, Enum.Font.GothamSemibold)
+        label.Size = UDim2.new(1, -48, 1, 0)
+        label.Position = UDim2.new(0, 42, 0, 0)
+
+        nav[index] = {button = btn, icon = icon, label = label, name = name}
+    end
+
+    local function addSection(page, text, layoutOrder)
+        local holder = Instance.new("Frame")
+        holder.Size = UDim2.new(1, -2, 0, 26)
+        holder.BackgroundTransparency = 1
+        holder.LayoutOrder = layoutOrder or 0
+        holder:SetAttribute("SearchLabel", text)
+        holder.Parent = page
+
+        local accentBar = Instance.new("Frame")
+        accentBar.Size = UDim2.new(0, 3, 0, 16)
+        accentBar.Position = UDim2.new(0, 1, 0, 5)
+        accentBar.BackgroundColor3 = UI.accent
+        accentBar.BorderSizePixel = 0
+        accentBar.Parent = holder
+        addCorner(accentBar, 3)
+
+        local label = makeLabel(holder, string.upper(text), 9, UI.muted, Enum.Font.GothamBold)
+        label.Position = UDim2.new(0, 11, 0, 0)
+        label.Size = UDim2.new(1, -12, 1, 0)
+        return holder
+    end
+
+    local function addToggle(page, name, key, layoutOrder)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -2, 0, 48)
+        btn.BackgroundColor3 = UI.panel
+        btn.Text = ""
+        btn.LayoutOrder = layoutOrder or 0
+        btn.Parent = page
+        btn:SetAttribute("SearchLabel", name)
+        styleButton(btn, UI.panel, UI.panel2)
+
+        local indicator = Instance.new("Frame")
+        indicator.Size = UDim2.new(0, 8, 0, 8)
+        indicator.Position = UDim2.new(0, 14, 0.5, -4)
+        indicator.BorderSizePixel = 0
+        indicator.Parent = btn
+        addCorner(indicator, 8)
+
+        local label = makeLabel(btn, name, 11, UI.text)
+        label.Size = UDim2.new(1, -122, 1, 0)
+        label.Position = UDim2.new(0, 32, 0, 0)
+
+        local status = makeLabel(btn, "OFF", 9, UI.muted, Enum.Font.GothamBold)
+        status.Size = UDim2.new(0, 34, 1, 0)
+        status.Position = UDim2.new(1, -88, 0, 0)
+        status.TextXAlignment = Enum.TextXAlignment.Right
+
+        local switch = Instance.new("Frame")
+        switch.Size = UDim2.new(0, 34, 0, 20)
+        switch.Position = UDim2.new(1, -46, 0.5, -10)
+        switch.BackgroundColor3 = Color3.fromRGB(49, 52, 63)
+        switch.BorderSizePixel = 0
+        switch.Parent = btn
+        addCorner(switch, 10)
+
+        local knob = Instance.new("Frame")
+        knob.Size = UDim2.new(0, 14, 0, 14)
+        knob.Position = UDim2.new(0, 3, 0.5, -7)
+        knob.BackgroundColor3 = Color3.fromRGB(170, 173, 183)
+        knob.BorderSizePixel = 0
+        knob.Parent = switch
+        addCorner(knob, 8)
+
+        local function refresh()
+            local enabled = config[key] == true
+            indicator.BackgroundColor3 = enabled and UI.good or Color3.fromRGB(87, 91, 103)
+            status.Text = enabled and "ON" or "OFF"
+            status.TextColor3 = enabled and UI.good or UI.muted
+            switch.BackgroundColor3 = enabled and Color3.fromRGB(47, 91, 67) or Color3.fromRGB(49, 52, 63)
+            knob.BackgroundColor3 = enabled and UI.good or Color3.fromRGB(170, 173, 183)
+            tween(knob, {Position = enabled and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)}, 0.16)
+        end
+
+        btn.MouseButton1Click:Connect(function()
+            config[key] = not config[key]
+            refresh()
+            saveConfigFile()
+        end)
+        refresh()
+    end
+
+    local function addInput(page, labelText, key, isNumber, placeholder, layoutOrder)
+        local holder = Instance.new("Frame")
+        holder.Size = UDim2.new(1, -2, 0, 62)
+        holder.BackgroundColor3 = UI.panel
+        holder.BorderSizePixel = 0
+        holder.LayoutOrder = layoutOrder or 0
+        holder.Parent = page
+        holder:SetAttribute("SearchLabel", labelText)
+        addCorner(holder, 9)
+        addStroke(holder, 0.55)
+
+        local label = makeLabel(holder, labelText, 10, UI.text, Enum.Font.GothamSemibold)
+        label.Size = UDim2.new(0.54, -12, 0, 20)
+        label.Position = UDim2.new(0, 12, 0, 8)
+
+        local hint = makeLabel(holder, placeholder or "", 8, UI.muted)
+        hint.Size = UDim2.new(0.54, -12, 0, 18)
+        hint.Position = UDim2.new(0, 12, 0, 31)
+
+        local tb = Instance.new("TextBox")
+        tb.Size = UDim2.new(0.40, -4, 0, 38)
+        tb.Position = UDim2.new(0.60, 0, 0.5, -19)
+        tb.BackgroundColor3 = UI.panel2
+        tb.TextColor3 = UI.text
+        tb.PlaceholderColor3 = UI.muted
+        tb.PlaceholderText = placeholder or ""
+        tb.Text = tostring(config[key] or "")
+        tb.ClearTextOnFocus = false
+        tb.Font = Enum.Font.Code
+        tb.TextSize = 10
+        tb.TextXAlignment = Enum.TextXAlignment.Left
+        tb.Parent = holder
+        addCorner(tb, 7)
+        addStroke(tb, 0.6)
+
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0, 10)
+        pad.PaddingRight = UDim.new(0, 10)
+        pad.Parent = tb
+
+        tb.Focused:Connect(function()
+            tween(tb, {BackgroundColor3 = Color3.fromRGB(31, 35, 48)}, 0.12)
+        end)
+
+        tb.FocusLost:Connect(function()
+            if isNumber then
+                local n = tonumber(tb.Text)
+                if n then
+                    config[key] = n
+                    tb.Text = tostring(n)
+                else
+                    tb.Text = tostring(config[key] or "")
+                end
+            else
+                config[key] = tb.Text
+            end
+            tween(tb, {BackgroundColor3 = UI.panel2}, 0.12)
+            saveConfigFile()
+        end)
+    end
+
+    local function addActionButton(page, text, layoutOrder, onClick)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -2, 0, 40)
+        btn.BackgroundColor3 = UI.accentSoft
+        btn.Text = text
+        btn.TextColor3 = UI.text
+        btn.Font = Enum.Font.GothamSemibold
+        btn.TextSize = 11
+        btn.LayoutOrder = layoutOrder or 0
+        btn.Parent = page
+        addCorner(btn, 8)
+        addStroke(btn, 0.35)
+        btn:SetAttribute("SearchLabel", text)
+
+        btn.MouseButton1Click:Connect(function()
+            if onClick then onClick() end
+            btn.BackgroundColor3 = UI.good
+            task.wait(0.12)
+            btn.BackgroundColor3 = UI.accentSoft
+        end)
+    end
+
+    local function addStatus(page)
+        local box = Instance.new("Frame")
+        box.Size = UDim2.new(1, -2, 0, 140)
+        box.BackgroundColor3 = UI.panel
+        box.BorderSizePixel = 0
+        box.LayoutOrder = 99
+        box.Parent = page
+        box:SetAttribute("SearchLabel", "live status diagnostics")
+        addCorner(box, 10)
+        addStroke(box, 0.45)
+
+        local topLine = Instance.new("Frame")
+        topLine.Size = UDim2.new(1, -24, 0, 1)
+        topLine.Position = UDim2.new(0, 12, 0, 38)
+        topLine.BackgroundColor3 = UI.border
+        topLine.BorderSizePixel = 0
+        topLine.Parent = box
+
+        local title = makeLabel(box, "LIVE STATUS", 9, UI.good, Enum.Font.GothamBold)
+        title.Position = UDim2.new(0, 12, 0, 9)
+        title.Size = UDim2.new(0, 180, 0, 18)
+
+        local stateLabel = makeLabel(box, "ACTIVE", 8, UI.good, Enum.Font.GothamBold)
+        stateLabel.Position = UDim2.new(1, -74, 0, 10)
+        stateLabel.Size = UDim2.new(0, 62, 0, 18)
+        stateLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+        local statusLabel = makeLabel(box, "idle", 9, UI.muted, Enum.Font.Code)
+        statusLabel.Size = UDim2.new(1, -24, 0, 90)
+        statusLabel.Position = UDim2.new(0, 12, 0, 45)
+        statusLabel.TextWrapped = true
+        statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+        task.spawn(function()
+            while statusLabel.Parent do
+                local lines = {
+                    "Boss color: " .. tostring(state.debugColorString or "idle"),
+                    "State: " .. tostring(state.bossState) .. " | Engaged: " .. tostring(state.bossEngaged),
+                    "Our run: " .. tostring(isOurClimbRun()) .. " | Targets: " .. tostring(state.lastTargetCount or 0),
+                    "Sky 3 Nightmare | Remote: " .. tostring(config.RemoteName),
+                }
+                statusLabel.Text = table.concat(lines, "\n")
+                stateLabel.Text = state.bossEngaged and "ACTIVE" or "IDLE"
+                stateLabel.TextColor3 = state.bossEngaged and UI.good or UI.muted
+                task.wait(0.4)
+            end
+        end)
+    end
+
+    local pageMain = makePage()
+    local pageTiming = makePage()
+    local pageBoss = makePage()
+
+    createNav("Automation", 1, "A")
+    createNav("Timing", 2, "T")
+    createNav("Boss", 3, "B")
+
+    addSection(pageMain, "Core automation", 1)
+    addToggle(pageMain, "Auto Swing", "AutoSwing", 2)
+    addToggle(pageMain, "Auto Loot", "AutoLoot", 3)
+    addToggle(pageMain, "Auto Blessing", "AutoBlessing", 4)
+    addToggle(pageMain, "Auto Mob Platform", "AutoMobPlatform", 5)
+    addToggle(pageMain, "Auto Boss", "AutoBoss", 6)
+    addToggle(pageMain, "Auto Replay", "AutoReplay", 7)
+    addToggle(pageMain, "Auto New Tower", "AutoNewTower", 8)
+    addToggle(pageMain, "Auto Shard Collector", "AutoShardCollector", 9)
+
+    addSection(pageMain, "Blessing", 11)
+    addToggle(pageMain, "Specific Blessing", "SpecificBlessing", 12)
+    addInput(pageMain, "Keywords", "BlessingName", false, "comma separated", 13)
+
+    addSection(pageMain, "Diagnostics", 15)
+    addToggle(pageMain, "Timeout Detector", "TimeoutDetector", 16)
+    addStatus(pageMain)
+
+    addSection(pageTiming, "Combat", 1)
+    addInput(pageTiming, "Swing delay", "SwingDelay", true, "seconds", 2)
+    addInput(pageTiming, "Platform height", "PlatformHeight", true, "studs", 3)
+    addInput(pageTiming, "Platform interval", "MobPlatformInterval", true, "seconds", 4)
+    addInput(pageTiming, "Mob max distance", "MobMaxDistance", true, "studs", 5)
+    addInput(pageTiming, "Teleport settle delay", "TeleportSettleDelay", true, "seconds", 6)
+    addInput(pageTiming, "Prompt drop height", "PromptDropHeight", true, "studs", 7)
+
+    addSection(pageTiming, "Shard collector", 9)
+    addInput(pageTiming, "Shard collect cooldown", "ShardCollectCooldown", true, "seconds", 10)
+    addInput(pageTiming, "Shard folder name", "ShardDropFolderName", false, "ClimbDrops", 11)
+    addInput(pageTiming, "Shard keyword", "ShardDropKeyword", false, "ShardDrop", 12)
+
+    addSection(pageTiming, "Fire vector", 14)
+    addInput(pageTiming, "Fire vector X", "FireVectorX", true, "number", 15)
+    addInput(pageTiming, "Fire vector Y", "FireVectorY", true, "number", 16)
+    addInput(pageTiming, "Fire vector Z", "FireVectorZ", true, "number", 17)
+    addToggle(pageTiming, "Burst fire on mob hop", "MobPlatformBurstFire", 18)
+
+    addSection(pageTiming, "Replay", 20)
+    addInput(pageTiming, "Chest -> replay delay", "ChestToReplayDelay", true, "seconds", 21)
+    addInput(pageTiming, "Min chest attempts", "MinChestFires", true, "attempts", 22)
+    addInput(pageTiming, "Chest stuck timeout", "ChestStuckTimeout", true, "seconds", 23)
+    addInput(pageTiming, "Run reset cooldown", "RunResetCooldown", true, "seconds", 24)
+
+    addSection(pageTiming, "Tower / timeout", 26)
+    addInput(pageTiming, "Timeout interval", "TimeoutCheckInterval", true, "seconds", 27)
+    addInput(pageTiming, "Required timeout hits", "TimeoutRequiredHits", true, "hits", 28)
+    addInput(pageTiming, "Timeout window", "TimeoutWindow", true, "seconds", 29)
+    addInput(pageTiming, "New tower cooldown", "NewTowerCooldown", true, "seconds", 30)
+
+    addSection(pageBoss, "Boss detection", 1)
+    addToggle(pageBoss, "Check Boss Color (informational)", "CheckBossColor", 2)
+    addInput(pageBoss, "Color read delay", "BossColorReadDelay", true, "seconds", 3)
+    addInput(pageBoss, "Color property", "BossColorProperty", false, "auto / BrickColor / Color3", 4)
+    addInput(pageBoss, "Color part hint", "BossColorPartHint", false, "auto or part name", 5)
+    addInput(pageBoss, "Color tolerance", "BossColorTolerance", true, "0.0 - 1.0", 6)
+    addInput(pageBoss, "Boss size ratio", "BossSizeRatio", true, "ratio", 7)
+    addInput(pageBoss, "Sheep name filter", "SheepNameFilter", false, "optional text", 8)
+    addInput(pageBoss, "Teleport offset", "BossTeleportOffset", false, "x, y, z", 9)
+
+    addSection(pageBoss, "Actions", 10)
+    addActionButton(pageBoss, "Force Re-read Boss Color", 11, function()
+        state.bossState = "idle"
+        state.bossColor = nil
+        state.bossColorProp = nil
+        state.bossSize = nil
+        state.bossName = nil
+        state.bossPart = nil
+        state.bossFirstSeenAt = nil
+        state.bossShepherdRef = nil
+        state.debugColorString = "manual reset"
+    end)
+
+    local currentTab = 1
+
+    local function applySearch(query)
+        local searchText = string.lower(query or "")
+        local activePage = pages[currentTab]
+        if not activePage then return end
+        for _, child in ipairs(activePage:GetChildren()) do
+            if child:IsA("GuiObject") then
+                local tag = string.lower(tostring(child:GetAttribute("SearchLabel") or ""))
+                child.Visible = (searchText == "" or string.find(tag, searchText, 1, true) ~= nil)
+            end
+        end
+    end
+
+    searchBox:GetPropertyChangedSignal("Text"):Connect(function() applySearch(searchBox.Text) end)
+
+    local function selectTab(index)
+        currentTab = index
+        for i, page in ipairs(pages) do page.Visible = i == index end
+        for i, item in ipairs(nav) do
+            local selected = i == index
+            item.button.BackgroundColor3 = selected and UI.accentSoft or UI.panel
+            item.icon.TextColor3 = selected and UI.text or UI.muted
+            item.label.TextColor3 = selected and UI.text or UI.muted
+        end
+        searchBox.Text = ""
+        applySearch("")
+    end
+
+    for i, item in ipairs(nav) do
+        item.button.MouseButton1Click:Connect(function() selectTab(i) end)
+    end
+
+    selectTab(1)
+
+    local minimized = false
+    local expandedSize = UDim2.new(0, 560, 0, 740)
+    local collapsedSize = UDim2.new(0, 560, 0, 72)
+
+    minimize.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        sidebar.Visible = not minimized
+        content.Visible = not minimized
+        statePill.Visible = not minimized
+        tween(frame, {Size = minimized and collapsedSize or expandedSize}, 0.2)
+        minimize.Text = minimized and "+" or "—"
+    end)
+end
+
+-- ============================================================
+-- BOOT
+-- ============================================================
+saveConfigFile()
+createMainUI()
